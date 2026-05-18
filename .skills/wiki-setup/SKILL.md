@@ -176,3 +176,7 @@ Report the results and tell the user they can now:
 4. Run `claude-history-ingest` to mine their Claude conversations
 5. Run `codex-history-ingest` to mine their Codex sessions (if they use Codex)
 6. Run `wiki-status` again anytime to check the delta
+
+## Optional: Refresh QMD After Setup
+
+If `QMD_WIKI_COLLECTION` is configured and the local QMD CLI is available, run `qmd update` after the initial vault files exist so the fresh vault is immediately queryable. No embedding pass is usually needed at setup time because the vault starts empty, so a plain update is enough unless you have already populated pages.
