@@ -17,6 +17,9 @@ commands:
   - name: wiki-lint
     description: Audit the wiki for orphans, broken links, stale content.
     skill: .skills/wiki-lint/SKILL.md
+  - name: wiki-deep-research
+    description: Plan-approved deep research with critique, source tracking, and cited wiki filing.
+    skill: .skills/wiki-deep-research/SKILL.md
 ---
 
 # Obsidian Wiki — Workflow Registry

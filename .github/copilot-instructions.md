@@ -1,11 +1,11 @@
 # Obsidian Wiki — Copilot Context
 
-This project is a **skill-based framework** for building and maintaining an Obsidian knowledge base using AI coding agents. There are no scripts or dependencies — everything is markdown instructions that the agent executes directly.
+This project is a **skill-based framework** for building and maintaining an Obsidian knowledge base using AI coding agents. Most workflows are markdown instructions that the agent executes directly; a few helper scripts provide deterministic bookkeeping for repeatable tasks.
 
 ## Project Overview
 
 - **Purpose:** Build and maintain an Obsidian wiki using the LLM Wiki pattern (Andrej Karpathy).
-- **Tech Stack:** Markdown only. No code, no dependencies. The AI agent IS the runtime.
+- **Tech Stack:** Markdown skills plus small helper scripts. The AI agent is the reasoning runtime.
 - **Key Config:** `.env` contains `OBSIDIAN_VAULT_PATH` pointing to the vault location.
 - **Skills:** `.skills/` contains skill folders, each with a `SKILL.md` defining a workflow.
 
@@ -29,6 +29,7 @@ This project is a **skill-based framework** for building and maintaining an Obsi
 | Data Ingest | `.skills/data-ingest/` | Process any text data |
 | Status | `.skills/wiki-status/` | Audit ingestion state and delta |
 | Query | `.skills/wiki-query/` | Answer questions from wiki |
+| Deep Research | `.skills/wiki-deep-research/` | Plan-approved deep research with critique and cited wiki filing |
 | Lint | `.skills/wiki-lint/` | Find broken links, orphans |
 | Rebuild | `.skills/wiki-rebuild/` | Archive and rebuild |
 | Cross-Linker | `.skills/cross-linker/` | Auto-discover and insert missing wikilinks |

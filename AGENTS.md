@@ -68,6 +68,7 @@ Skills live in `.skills/<name>/SKILL.md`. Match the user's intent to the right s
 | "color my graph" / "color code obsidian" / "color by tag/category/visibility" | `graph-colorize` |
 | "save this" / "/wiki-capture" / "capture this" / "file this conversation" | `wiki-capture` |
 | "/wiki-research [topic]" / "research X" / "find everything about Y" | `wiki-research` |
+| "/wiki-deep-research [topic]" / "deep research with approval" / "research this but show me the plan first" / "ADK deep search" | `wiki-deep-research` |
 | "create a dashboard" / "vault dashboard" / "show all X as a table" / "dynamic view" | `wiki-dashboard` |
 | "synthesize my wiki" / "find connections" / "what concepts keep coming up together" / "/wiki-synthesize" | `wiki-synthesize` |
 | "create a new skill" | `skill-creator` |

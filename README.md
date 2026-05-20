@@ -284,6 +284,7 @@ Everything lives in `.skills/`. Each skill is a markdown file the agent reads wh
 | `wiki-export`           | Export vault graph to JSON, GraphML, Neo4j, HTML  | `/wiki-export`           |
 | `wiki-capture`          | Save the current conversation as a wiki note      | `/wiki-capture`          |
 | `wiki-research`         | Autonomous multi-round web research, self-filed   | `/wiki-research [topic]` |
+| `wiki-deep-research`    | Plan-approved deep research with critique and cited wiki filing | `/wiki-deep-research [topic]` |
 | `wiki-dashboard`        | Create dynamic Obsidian Bases dashboard views     | `/wiki-dashboard`        |
 | `wiki-synthesize`       | Discover and fill synthesis gaps across concepts  | `/wiki-synthesize`       |
 | `wiki-agent`            | Query-driven ingest from a specific agent's history | `/wiki-claude [topic]`, `/wiki-codex [topic]`, etc. |
