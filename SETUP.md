@@ -4,7 +4,18 @@ A skill-based framework for AI coding agents — Claude Code, Cursor, Windsurf, 
 
 > Running `bash setup.sh` wires up every supported agent: project-local skill symlinks (`.claude/skills/`, `.cursor/skills/`, `.windsurf/skills/`, `.agents/skills/`, `.kiro/skills/`), global symlinks (`~/.claude/skills/`, `~/.gemini/skills/`, `~/.codex/skills/`, `~/.hermes/skills/`, `~/.openclaw/skills/`, `~/.copilot/skills/`, `~/.trae/skills/`, `~/.trae-cn/skills/`, `~/.kiro/skills/`, `~/.agents/skills/`), and always-on rule files (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`, `.hermes.md`, `.cursor/rules/…`, `.windsurf/rules/…`, `.kiro/steering/…`, `.agent/rules/…`, `.agent/workflows/…`, `.github/copilot-instructions.md`). See the [Agent Compatibility table in README.md](README.md#agent-compatibility) for the full matrix.
 
-## Quick Start
+## Install via pip (no clone needed)
+
+```bash
+pip install obsidian-wiki
+obsidian-wiki setup --vault /path/to/your/vault
+```
+
+This does everything `setup.sh` does without a clone: writes `~/.obsidian-wiki/config` and installs every skill into all supported agents' skills directories (symlinked to the installed package, so `pip install -U obsidian-wiki` upgrades them everywhere). Add `--project .` to also drop project-local skills and the `AGENTS.md` / rule files into the current repo, or `--copy` to copy skill files instead of symlinking. Run `obsidian-wiki info` to see resolved paths.
+
+The rest of this doc covers the `git clone` + `setup.sh` path.
+
+## Quick Start (git clone)
 
 ### 1. Set your vault path
 

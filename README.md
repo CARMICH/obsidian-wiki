@@ -19,7 +19,25 @@ We took that and built a framework around it. The whole thing is a set of markdo
 
 ## Quick Start
 
-### Install via Skills CLI (recommended)
+### Install via pip (recommended)
+
+```bash
+pip install obsidian-wiki
+obsidian-wiki setup --vault /path/to/your/vault
+```
+
+`obsidian-wiki setup` writes the config to `~/.obsidian-wiki/config` and installs every wiki skill into all your AI agents (Claude Code, Cursor, Codex, Gemini, Hermes, Pi, and more). Skills are symlinked to the installed package, so `pip install -U obsidian-wiki` upgrades them everywhere — just re-run `obsidian-wiki setup` to pick up new skills. Then open a project in your agent and say **"set up my wiki"**.
+
+```bash
+obsidian-wiki list              # list the bundled skills
+obsidian-wiki info              # show install paths, version, and config
+obsidian-wiki setup --project . # also drop project-local skills + AGENTS.md into the current repo
+obsidian-wiki setup --copy      # copy skill files instead of symlinking
+```
+
+`OBSIDIAN_VAULT_PATH` is just any directory where you want your wiki documents to live — a new empty folder or an existing Obsidian vault. Omit `--vault` to be prompted (or set it later in `~/.obsidian-wiki/config`).
+
+### Install via Skills CLI
 
 ```bash
 npx skills add Ar9av/obsidian-wiki
