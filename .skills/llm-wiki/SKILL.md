@@ -149,6 +149,10 @@ The manifest enables:
 - **Audit** — which source produced which wiki page
 - **Staleness detection** — source changed but wiki page hasn't been updated
 
+**Canonical source keys.** Source keys MUST be stored in a single canonical form: **absolute paths with `~` and env vars expanded** (e.g. `/Users/me/.claude/projects/.../abc.jsonl`, never `~/.claude/...`). The manifest is keyed by the raw string, so a mix of `~`-relative and absolute keys lets the *same file* be tracked twice — and the delta check then re-ingests an already-processed file because the lookup misses the other-form key. Always expand before you compare against the manifest and before you write a new entry. To repair an existing vault that already has both forms, run `scripts/manifest.py normalize <vault>` (merges colliding entries, keeps the newest `ingested_at`).
+
+**Recording provenance.** When you write a manifest entry, populate `pages_created` and `pages_updated` with the vault-relative page paths that source contributed to. This is what makes re-ingestion (when a source changes) able to find the pages to revisit, instead of guessing.
+
 ## Page Template
 
 When creating a new wiki page, use this structure:
@@ -159,6 +163,9 @@ title: Page Title
 category: concepts
 tags: [ml, architecture]
 aliases: [alternate name]
+relationships:
+  - target: "[[concepts/related-concept]]"
+    type: extends
 sources: [papers/attention.pdf]
 summary: One or two sentences, ≤200 chars, so a reader (or another skill) can preview this page without opening it.
 provenance:
@@ -168,6 +175,7 @@ provenance:
 base_confidence: 0.65
 lifecycle: draft
 lifecycle_changed: 2024-03-15
+tier: supporting
 created: 2024-03-15T10:30:00Z
 updated: 2024-03-15T10:30:00Z
 ---
@@ -227,6 +235,47 @@ provenance:
 
 These are best-effort numbers written by the ingest skill at create/update time. `wiki-lint` recomputes them and flags drift. The block is optional — pages without it are treated as fully extracted by convention.
 
+## Typed Relationships
+
+Plain `[[wikilinks]]` in page bodies carry no semantic weight — they indicate "related to" but not *how*. The optional `relationships:` frontmatter block adds typed, directional edges to the knowledge graph.
+
+### The `relationships:` block
+
+```yaml
+relationships:
+  - target: "[[Transformer Architecture]]"
+    type: extends
+  - target: "[[LSTM]]"
+    type: contradicts
+  - target: "[[Attention Mechanism]]"
+    type: implements
+```
+
+Each entry has two required fields:
+- `target` — a wikilink (using the same format as `OBSIDIAN_LINK_FORMAT`) to the related page
+- `type` — one of the allowed semantic types below
+
+### Allowed relationship types
+
+| Type | Meaning | Example |
+|---|---|---|
+| `extends` | This page builds on or generalises the target | GPT extends Transformer Architecture |
+| `implements` | This page is a concrete realisation of the target concept | BERT implements Masked Language Modelling |
+| `contradicts` | This page's claims conflict with or refute the target | Evidence A contradicts Evidence B |
+| `derived_from` | This page is based on or adapted from the target | Fine-tuning is derived from Transfer Learning |
+| `uses` | This page depends on or relies on the target | RAG uses Vector Databases |
+| `replaces` | This page supersedes or deprecates the target | GPT-4 replaces GPT-3 |
+| `related_to` | Catch-all: related but no stronger directional type applies | Concept A is related to Concept B |
+
+### Rules
+
+- **Optional field** — omit the block entirely if no typed relationships are known. Untagged wikilinks remain valid and are treated as `related_to` by `wiki-export`.
+- **Don't duplicate** — if `[[foo]]` already appears as an inline wikilink, the `relationships:` entry just enriches it with a type; it is not a second link.
+- **Direction matters** — the page declaring the entry is the *source*; `target` is the destination. Only declare relationships from this page's perspective.
+- **Don't fabricate** — only add a typed entry when the source material makes the relationship direction and type clear. When in doubt, use `related_to` or omit.
+
+Skills that read `relationships:`: `wiki-export` (emits typed edges), `cross-linker` (writes typed entries when inferring links), `wiki-query` (surfaces type in answers and walks the typed-edge graph for multi-hop "how is X connected to Y" path queries — bounded BFS over the `relationships:` adjacency, frontmatter-only).
+
 ## Confidence and Lifecycle
 
 Every page carries two orthogonal trust signals plus an optional supersession link.
@@ -282,7 +331,7 @@ source_quality_score = avg(quality score per distinct source_id)
 
 | Skill | base_confidence | lifecycle |
 |---|---|---|
-| `ingest-url` | `0.17 + 0.5 × classify(url)` | `draft` |
+| `wiki-ingest` (URL) | `0.17 + 0.5 × classify(url)` | `draft` |
 | `wiki-ingest` (single doc) | per-source classifier | `draft` |
 | `wiki-ingest` (multi-doc) | `min(N/3,1)×0.5 + avg_q×0.5` | `draft` |
 | `wiki-research` | varies, often 0.85+ | `draft` |
@@ -290,7 +339,6 @@ source_quality_score = avg(quality score per distinct source_id)
 | `*-history-ingest` | 0.42 | `draft` |
 | `wiki-update` | 0.59 | `draft` |
 | `wiki-synthesize` | `min(input_pages.base_confidence)` | `draft` |
-| `data-ingest` | 0.37 | `draft` |
 
 ### Lifecycle state machine
 
@@ -305,6 +353,33 @@ Five states. **`stale` is not a state** — it is a computed overlay: `is_stale 
 | `archived` | Manual edit, or ingest skill setting `superseded_by` | Terminal |
 
 Only ingest skills set `draft`. All other transitions require a human editor. Update `lifecycle_changed` whenever the state changes.
+
+## Importance Tiering
+
+The `tier:` field controls which pages get updated on each ingest pass and their priority in retrieval. As wikis grow, re-reading every page on every ingest wastes tokens — tiering lets ingest and query skills focus effort where it matters most.
+
+### Three tiers
+
+| Tier | Meaning | Ingest behavior | Query priority |
+|---|---|---|---|
+| `core` | Load-bearing pages — many other pages depend on them (high incoming-link count or bridge position). Always worth updating. | Always update if the source is even marginally relevant | Surfaced first in index and full-read passes |
+| `supporting` *(default)* | Standard wiki pages with moderate connectivity | Update when the source has clear new claims for this page | Standard priority |
+| `peripheral` | Low-connectivity pages — rarely linked, narrowly scoped | Skip unless the source is *primarily* about this topic | Last resort; skipped when trimming to context budget |
+
+### Assignment rules
+
+- **New pages:** default to `tier: supporting`
+- **Promote to `core`:** when a page accumulates ≥5 incoming wikilinks **or** is flagged as a bridge by `wiki-status` insights mode
+- **Demote to `peripheral`:** when a page has ≤1 incoming link and hasn't been updated in 90+ days
+- **Human override always wins** — edit `tier:` manually to lock a page at any level
+- Existing pages without `tier:` are treated as `supporting` (backward compatible — no migration needed)
+
+### Who manages tier
+
+- `wiki-ingest` reads `tier:` to decide whether to update a page on the current pass
+- `wiki-query` uses `tier:` to order candidates in the index pass and trim to context budget
+- `wiki-status` insights mode computes graph metrics and **suggests** tier assignments — it never writes them automatically
+- `wiki-lint` flags missing `tier:` on newly created pages (Phase 2 enforcement, same timeline as `base_confidence`)
 
 ## Retrieval Primitives
 
@@ -323,6 +398,12 @@ Reading the vault is the dominant cost of every read-side skill. Use the cheapes
 **Why this matters:** a 20-page vault lets you get away with full-vault scans. A 200-page vault does not. The primitives above are how the skills framework scales to large vaults without a database.
 
 Skills that consume this table: `wiki-query`, `cross-linker`, `wiki-lint`, `wiki-status` (insights mode). Any new skill that reads the vault should cite this section rather than reinvent the pattern.
+
+## QMD Index Freshness
+
+QMD is an optional search index layered on top of the vault. The markdown vault is the source of truth. Any skill that writes wiki markdown should refresh QMD after the vault write completes, but only when `QMD_WIKI_COLLECTION` is configured and the local QMD transport is available. If QMD refresh fails, keep the vault changes and report the QMD status separately.
+
+Use the cheapest verification path that proves the new content is visible: `qmd update`, `qmd embed` only if vectors are stale or missing, then a targeted `qmd get` or `qmd ls` check for one written page or the collection root. Read-only skills should not refresh QMD.
 
 ## Core Principles
 
@@ -411,12 +492,15 @@ The wiki is configured through environment variables (see `.env.example`). The o
 - `OBSIDIAN_VAULT_PATH` — Where the wiki lives **(required)**
 - `OBSIDIAN_SOURCES_DIR` — Where raw source documents are
 - `OBSIDIAN_CATEGORIES` — Comma-separated list of categories
+- `WIKI_SKIP_PROJECTS` — Comma-separated substrings; any project dir whose name contains one is excluded from history ingest (scan + delta + manifest). See the "Project Scoping" step in the history-ingest skills.
 - `CLAUDE_HISTORY_PATH` — Where to find Claude conversation data
 - `CODEX_HISTORY_PATH` — Where to find Codex session data
 - `HERMES_HOME` — Where to find Hermes agent data
 - `OPENCLAW_HOME` — Where to find OpenClaw data
 - `COPILOT_HISTORY_PATH` — Where to find Copilot session data
 - `OBSIDIAN_LINK_FORMAT` — Internal link syntax: `wikilink` (default) or `markdown`
+- `WIKI_TOKEN_WARN_THRESHOLD` — Emit a warning in `wiki-status` when the full-wiki token estimate exceeds this value (default: `100000`). Set to `0` to disable. See `wiki-status` for the token footprint report.
+- `WIKI_STAGED_WRITES` — When `true`, all LLM-written pages go to `_staging/<category>/` for human review before promotion. See `wiki-setup` and `wiki-stage-commit` for details.
 
 No API keys are needed — the agent running these skills already has LLM access built in.
 
@@ -437,10 +521,9 @@ Use `wiki-status` to see the delta and get a recommendation. Use `wiki-rebuild` 
 For details on specific operations, see the companion skills:
 - **wiki-status** — Audit what's ingested, compute delta, recommend append vs rebuild
 - **wiki-rebuild** — Archive current wiki, rebuild from scratch, or restore from archive
-- **wiki-ingest** — Distill source documents into wiki pages
+- **wiki-ingest** — Distill source documents into wiki pages and raw text/chat/log data
 - **claude-history-ingest** — Ingest Claude conversation history
 - **codex-history-ingest** — Ingest Codex CLI session history
-- **data-ingest** — Ingest any raw text data
 - **wiki-query** — Answer questions against the wiki
 - **wiki-lint** — Audit and maintain wiki health
 - **wiki-setup** — Initialize a new vault

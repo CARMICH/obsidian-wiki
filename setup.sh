@@ -33,16 +33,52 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$SCRIPT_DIR/.skills"
 
-# Symlink every skill in SKILLS_DIR into TARGET_DIR.
-# Skips real directories to avoid data loss; updates stale symlinks.
+# install_skills <target_dir> <label> [relative|absolute] [skill-subset...]
+# "relative" requires target_dir under $SCRIPT_DIR and emits ../-prefixed
+# targets matching the committed symlinks. Extra args restrict the install
+# to a named subset of skills (e.g. portable-only into ~/.claude/skills).
 install_skills() {
   local target_dir="$1"
   local label="$2"
+  local mode="${3:-absolute}"
+  shift 3 || shift $#
+  local subset=("$@")  # empty = install all
+
+  case "$mode" in
+    relative|absolute) ;;
+    *) echo "install_skills: bad mode '$mode' (want relative|absolute)" >&2; exit 1 ;;
+  esac
+
+  local rel_prefix=""
+  if [ "$mode" = "relative" ]; then
+    # Strip $SCRIPT_DIR prefix; if it doesn't match, target is outside the
+    # repo and "relative" isn't meaningful — bail rather than emit a wrong link.
+    local rel="${target_dir#"$SCRIPT_DIR"/}"
+    if [ "$rel" = "$target_dir" ]; then
+      echo "install_skills: relative mode requires target under \$SCRIPT_DIR ($target_dir)" >&2
+      exit 1
+    fi
+    # One ../ per path component in $rel; e.g. .claude/skills → 2 components → ../../
+    local slashes="${rel//[^\/]/}"
+    local depth=$(( ${#slashes} + 1 )) i
+    for (( i=0; i<depth; i++ )); do rel_prefix="../$rel_prefix"; done
+  fi
+
   mkdir -p "$target_dir"
   for skill in "$SKILLS_DIR"/*/; do
-    local skill_name link_path
+    local skill_name link_path link_target
     skill_name="$(basename "$skill")"
+    if [ ${#subset[@]} -gt 0 ]; then
+      local match=0 want
+      for want in "${subset[@]}"; do [ "$want" = "$skill_name" ] && match=1 && break; done
+      [ "$match" = 1 ] || continue
+    fi
     link_path="$target_dir/$skill_name"
+    if [ "$mode" = "relative" ]; then
+      link_target="${rel_prefix}.skills/$skill_name"
+    else
+      link_target="${skill%/}"
+    fi
     if [ -L "$link_path" ]; then
       rm "$link_path"
     elif [ -d "$link_path" ]; then
@@ -53,9 +89,11 @@ install_skills() {
       # as regular files containing the target path. Replace with a real symlink.
       rm "$link_path"
     fi
-    ln -s "${skill%/}" "$link_path"
+    ln -s "$link_target" "$link_path"
+    # Sanity check: every skill ships a SKILL.md, so a working symlink resolves it.
+    [ -e "$link_path/SKILL.md" ] || { echo "install_skills: broken link $link_path → $link_target" >&2; exit 1; }
   done
-  echo "✅  Installed global skills → $label"
+  echo "✅  Installed skills → $label"
 }
 
 echo ""
@@ -88,7 +126,7 @@ fi
 # If vault path is empty or placeholder, ask the user
 if [ -z "$VAULT_PATH" ] || [ "$VAULT_PATH" = "/path/to/your/vault" ]; then
   echo ""
-  read -p "  Where is your Obsidian vault? (absolute path): " VAULT_PATH
+  read -p "  Where is your Obsidian vault? (absolute path): " VAULT_PATH || true
   if [ -n "$VAULT_PATH" ]; then
     # Escape the path for sed: replace '/' with '\/' and '"' with '\"'
     ESCAPED_PATH=$(printf '%s\n' "$VAULT_PATH" | sed -e 's/[\/&]/\\&/g' -e 's/"/\\"/g')
@@ -126,30 +164,17 @@ AGENT_DIRS=(
   ".cursor/skills"
   ".windsurf/skills"
   ".agents/skills"
+  ".pi/skills"         # Pi coding agent
   ".kiro/skills"        # Kiro IDE/CLI (paired with .kiro/steering/obsidian-wiki.md)
 )
 
 for agent_dir in "${AGENT_DIRS[@]}"; do
-  install_skills "$SCRIPT_DIR/$agent_dir" "$agent_dir/"
+  install_skills "$SCRIPT_DIR/$agent_dir" "$agent_dir/" relative
 done
 
 # ── Step 3: Install global skills ────────────────────────────
-# ~/.claude/skills gets only the two portable skills (usable from any project)
-GLOBAL_SKILL_DIR="$HOME/.claude/skills"
-mkdir -p "$GLOBAL_SKILL_DIR"
-for skill_name in "wiki-update" "wiki-query"; do
-  link_path="$GLOBAL_SKILL_DIR/$skill_name"
-  if [ -L "$link_path" ]; then
-    rm "$link_path"
-  elif [ -d "$link_path" ]; then
-    echo "⚠️   $link_path is a real directory, skipping symlink"
-    continue
-  elif [ -f "$link_path" ]; then
-    rm "$link_path"
-  fi
-  ln -s "$SKILLS_DIR/$skill_name" "$link_path"
-done
-echo "✅  Installed global skills → ~/.claude/skills/ (wiki-update, wiki-query)"
+# ~/.claude/skills gets only the two portable skills (usable from any project).
+install_skills "$HOME/.claude/skills" "~/.claude/skills/ (wiki-update, wiki-query)" absolute wiki-update wiki-query
 
 # Steps 3b–3j: Install all skills for every supported agent.
 # OpenClaw discovers skills from ~/.agents/skills/ (per docs.openclaw.ai/skills);
@@ -159,15 +184,118 @@ echo "✅  Installed global skills → ~/.claude/skills/ (wiki-update, wiki-quer
 install_skills "$HOME/.gemini/skills"             "~/.gemini/skills/ (Gemini CLI)"
 install_skills "$HOME/.gemini/antigravity/skills" "~/.gemini/antigravity/skills/ (Antigravity, legacy)"
 install_skills "$HOME/.codex/skills"              "~/.codex/skills/"
-install_skills "$HOME/.hermes/skills"             "~/.hermes/skills/ (Hermes)"
+install_skills "$HOME/.hermes/skills"             "~/.hermes/skills/ (Hermes default)"
+# Hermes: active named profile (if $HERMES_HOME points to a non-default location)
+if [ -n "$HERMES_HOME" ] && [ "$HERMES_HOME" != "$HOME/.hermes" ]; then
+  install_skills "$HERMES_HOME/skills" "$HERMES_HOME/skills/ (Hermes active profile: $(basename "$HERMES_HOME"))"
+fi
+# Hermes: all named profiles under ~/.hermes/profiles/
+if [ -d "$HOME/.hermes/profiles" ]; then
+  for _hermes_profile_dir in "$HOME/.hermes/profiles"/*/; do
+    [ -d "$_hermes_profile_dir" ] || continue
+    _hermes_profile_name="$(basename "$_hermes_profile_dir")"
+    # Skip if already handled via $HERMES_HOME above
+    if [ -n "$HERMES_HOME" ] && [ "$HERMES_HOME" = "${_hermes_profile_dir%/}" ]; then
+      continue
+    fi
+    install_skills "${_hermes_profile_dir}skills" \
+      "~/.hermes/profiles/${_hermes_profile_name}/skills/ (Hermes profile: ${_hermes_profile_name})"
+  done
+fi
 install_skills "$HOME/.openclaw/skills"           "~/.openclaw/skills/ (OpenClaw managed)"
 install_skills "$HOME/.copilot/skills"            "~/.copilot/skills/ (GitHub Copilot CLI)"
 install_skills "$HOME/.trae/skills"               "~/.trae/skills/ (Trae)"
 install_skills "$HOME/.trae-cn/skills"            "~/.trae-cn/skills/ (Trae CN)"
 install_skills "$HOME/.kiro/skills"               "~/.kiro/skills/ (Kiro CLI)"
+install_skills "$HOME/.pi/agent/skills"           "~/.pi/agent/skills/ (Pi)"
 install_skills "$HOME/.agents/skills"             "~/.agents/skills/ (OpenCode, Aider, Droid, generic)"
 
-# ── Step 4: Summary ──────────────────────────────────────────
+# ── Step 4: GitHub sync (optional) ───────────────────────────
+SYNC_CONFIGURED=false
+VAULT_REMOTE=""
+
+echo ""
+read -p "  Set up GitHub sync for your vault? [y/N]: " SETUP_SYNC || true
+if [[ "$SETUP_SYNC" =~ ^[Yy]$ ]]; then
+  read -p "  GitHub repo URL (e.g. https://github.com/you/my-wiki.git): " VAULT_REMOTE || true
+  if [ -n "$VAULT_REMOTE" ] && [ -n "$VAULT_PATH" ] && [ -d "$VAULT_PATH" ]; then
+    # Init git repo in vault if needed
+    if [ ! -d "$VAULT_PATH/.git" ]; then
+      git -C "$VAULT_PATH" init -q
+      echo "✅  Initialized git repo in vault"
+    fi
+    # Create .gitignore if missing
+    if [ ! -f "$VAULT_PATH/.gitignore" ]; then
+      cat > "$VAULT_PATH/.gitignore" <<'GITIGNORE'
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.trash/
+GITIGNORE
+      echo "✅  Created .gitignore in vault"
+    fi
+    # Add or update remote
+    if git -C "$VAULT_PATH" remote get-url origin &>/dev/null 2>&1; then
+      git -C "$VAULT_PATH" remote set-url origin "$VAULT_REMOTE"
+    else
+      git -C "$VAULT_PATH" remote add origin "$VAULT_REMOTE"
+    fi
+    echo "✅  Git remote → $VAULT_REMOTE"
+    # Persist remote in global config
+    echo "VAULT_GITHUB_REMOTE=\"$VAULT_REMOTE\"" >> "$GLOBAL_CONFIG"
+    # Write ~/.obsidian-wiki/sync.sh
+    cat > "$GLOBAL_CONFIG_DIR/sync.sh" <<'SYNC_SCRIPT'
+#!/bin/bash
+# wiki-sync — commit and push vault changes to GitHub
+set -e
+# shellcheck source=/dev/null
+source "$HOME/.obsidian-wiki/config" 2>/dev/null || true
+VAULT="${OBSIDIAN_VAULT_PATH:-}"
+[ -d "$VAULT" ] || { echo "wiki-sync: vault not found at '$VAULT'" >&2; exit 1; }
+cd "$VAULT"
+git add -A
+if git diff --cached --quiet; then
+  echo "wiki-sync: nothing to commit"
+  exit 0
+fi
+git commit -m "sync $(date '+%Y-%m-%d %H:%M')"
+git push
+echo "wiki-sync: pushed to $(git remote get-url origin)"
+SYNC_SCRIPT
+    chmod +x "$GLOBAL_CONFIG_DIR/sync.sh"
+    echo "✅  Wrote ~/.obsidian-wiki/sync.sh"
+    SYNC_CONFIGURED=true
+
+    # Offer shell alias
+    echo ""
+    read -p "  Add 'wiki-sync' alias to your shell? [Y/n]: " ADD_ALIAS || true
+    if [[ ! "$ADD_ALIAS" =~ ^[Nn]$ ]]; then
+      SHELL_RC=""
+      [ -f "$HOME/.zshrc" ]  && SHELL_RC="$HOME/.zshrc"
+      [ -z "$SHELL_RC" ] && [ -f "$HOME/.bashrc" ] && SHELL_RC="$HOME/.bashrc"
+      if [ -n "$SHELL_RC" ]; then
+        if ! grep -q "wiki-sync" "$SHELL_RC"; then
+          printf '\n# wiki-sync — push Obsidian vault to GitHub\nalias wiki-sync='"'"'~/.obsidian-wiki/sync.sh'"'"'\n' >> "$SHELL_RC"
+          echo "✅  Added wiki-sync alias to $SHELL_RC"
+          echo "    → Run: source $SHELL_RC  (or open a new terminal)"
+        else
+          echo "    ℹ️  wiki-sync alias already in $SHELL_RC"
+        fi
+      fi
+    fi
+
+    # Offer hourly cron
+    echo ""
+    read -p "  Enable hourly auto-sync (cron)? [y/N]: " ADD_CRON || true
+    if [[ "$ADD_CRON" =~ ^[Yy]$ ]]; then
+      CRON_LINE="0 * * * * $GLOBAL_CONFIG_DIR/sync.sh >> $GLOBAL_CONFIG_DIR/sync.log 2>&1"
+      ( crontab -l 2>/dev/null; echo "$CRON_LINE" ) | sort -u | crontab -
+      echo "✅  Hourly cron installed  (logs: ~/.obsidian-wiki/sync.log)"
+    fi
+  fi
+fi
+
+# ── Step 5: Summary ──────────────────────────────────────────
 SKILL_COUNT=$(echo "$SKILLS_DIR"/*/  | tr ' ' '\n' | grep -c /)
 
 echo ""
@@ -177,12 +305,15 @@ echo ""
 echo " Skills found:    $SKILL_COUNT"
 echo " Agents ready:    Claude Code, Cursor, Windsurf, Gemini CLI, Antigravity,"
 echo "                  Codex, Hermes, OpenClaw, OpenCode, Aider, Factory Droid,"
-echo "                  Trae, Trae CN, Kiro, GitHub Copilot (CLI + VS Code Chat)"
+echo "                  Trae, Trae CN, Kiro, Pi, GitHub Copilot (CLI + VS Code Chat)"
+if $SYNC_CONFIGURED; then
+echo " GitHub sync:     wiki-sync  (script: ~/.obsidian-wiki/sync.sh)"
+fi
 echo ""
 echo " Bootstrap files:"
 echo "   CLAUDE.md                            → Claude Code"
 echo "   GEMINI.md                            → Gemini / Antigravity"
-echo "   AGENTS.md                            → Codex, OpenClaw, OpenCode, Aider, Droid, Trae, Hermes"
+echo "   AGENTS.md                            → Codex, OpenClaw, OpenCode, Aider, Droid, Trae, Hermes, Pi"
 echo "   .hermes.md                           → Hermes (symlink → AGENTS.md)"
 echo "   .cursor/rules/obsidian-wiki.mdc      → Cursor (alwaysApply)"
 echo "   .windsurf/rules/obsidian-wiki.md     → Windsurf (always-on)"
@@ -197,6 +328,9 @@ echo "   2. Say: \"Set up my wiki\""
 echo ""
 echo " From any other project:"
 echo "   /wiki-update    → sync knowledge into your vault"
-echo "   /wiki-query    → ask questions against your wiki"
+echo "   /wiki-query     → ask questions against your wiki"
+if $SYNC_CONFIGURED; then
+echo "   wiki-sync       → push all vault changes to GitHub"
+fi
 echo "───────────────────────────────────────────────────"
 echo ""

@@ -17,11 +17,25 @@ You are exporting the wiki's wikilink graph to structured formats so it can be u
 1. **Resolve config** — follow the Config Resolution Protocol in `llm-wiki/SKILL.md` (walk up CWD for `.env` → `~/.obsidian-wiki/config` → prompt setup). This gives `OBSIDIAN_VAULT_PATH`
 2. Confirm the vault has pages to export — if fewer than 5 pages exist, warn the user and stop
 
+## Project Filter (optional)
+
+If the user's invocation includes a project name — e.g. `/wiki-export prismor`, `"export the prismor project"`, `"export project:security"` — activate **project filter mode**:
+
+1. **Extract the project name** from the argument or phrase. Normalise: lowercase, strip the word "project".
+2. Keep only pages where **either** condition holds:
+   - The page `id` starts with `projects/<name>/` (path-based match)
+   - The page's `tags` array contains `<name>` (tag-based match)
+3. Drop any edge where either endpoint was excluded.
+4. Note the filter in the summary: `(filtered: project:<name> — X of Y pages)`
+5. Set `graph.graph.filter = "project:<name>"` in the JSON output.
+
+If both a project filter and a visibility filter are active, apply both (project filter first, then visibility filter on the remaining set).
+
 ## Visibility Filter (optional)
 
 By default, **all pages are exported** regardless of visibility tags. This preserves existing behavior.
 
-If the user requests a filtered export — phrases like **"public export"**, **"user-facing export"**, **"exclude internal"**, **"no internal pages"** — activate **filtered mode**:
+If the user requests a filtered export — phrases like **"public export"**, **"user-facing export"**, **"exclude internal"**, **"no internal pages"** — activate **visibility filtered mode**:
 
 - Build a **blocked tag set**: `{visibility/internal, visibility/pii}`
 - Skip any page whose frontmatter tags contain a blocked tag when building the node list
@@ -32,7 +46,7 @@ Pages with no `visibility/` tag, or tagged `visibility/public`, are always inclu
 
 ## Step 1: Build the Node and Edge Lists
 
-Glob all `.md` files in the vault (excluding `_archives/`, `_raw/`, `.obsidian/`, `index.md`, `log.md`, `_insights.md`). In filtered mode, also skip pages whose tags contain `visibility/internal` or `visibility/pii`.
+Glob all `.md` files in the vault (excluding `_archives/`, `_raw/`, `.obsidian/`, `index.md`, `log.md`, `_insights.md`). Apply any active filters (project and/or visibility) after collecting the full file list.
 
 For each page, extract from frontmatter:
 - `id` — relative path from vault root, without `.md` extension (e.g. `concepts/transformers`)
@@ -49,6 +63,14 @@ For each page, Grep the body for `\[\[.*?\]\]` to extract all wikilinks:
 - Skip links that point outside the node list (broken links)
 - Each resolved link becomes an edge: `{source: page_id, target: linked_id, relation: "wikilink", confidence: "EXTRACTED"}`
 - If the linking sentence ends with `^[inferred]` or `^[ambiguous]`, override `confidence` accordingly
+
+**Typed edge enrichment:** After building the wikilink edge list, read each page's `relationships:` frontmatter block. For each `{target, type}` entry:
+- The `target` YAML value is a quoted wikilink string such as `"[[concepts/lstm]]"`. Strip the surrounding `[[` and `]]` characters, then apply the same normalization (lowercase, spaces→hyphens, strip `.md`) to get the node id.
+- Skip entries whose resolved target is not in the node list (broken link)
+- If an edge for this `(source, target)` pair already exists, override its `relation` field with the typed value (e.g., `"contradicts"`) and set `typed: true`
+- If no edge exists yet for this pair, add one: `{source: page_id, target: target_id, relation: <type>, confidence: "EXTRACTED", typed: true}`
+
+This means `relation: "wikilink"` is the default for plain untyped links; a `relationships:` entry promotes it to a named semantic type. Edges that originated from both a body wikilink and a `relationships:` entry keep a single record — the typed version wins.
 
 This is your **edge list**.
 
@@ -98,6 +120,13 @@ NetworkX node_link format — standard for graph tools and scripts:
       "target": "entities/vaswani",
       "relation": "wikilink",
       "confidence": "EXTRACTED"
+    },
+    {
+      "source": "concepts/transformers",
+      "target": "concepts/lstm",
+      "relation": "contradicts",
+      "confidence": "EXTRACTED",
+      "typed": true
     }
   ]
 }
@@ -117,6 +146,7 @@ GraphML XML format — loadable in Gephi, yEd, and Cytoscape:
   <key id="tags" for="node" attr.name="tags" attr.type="string"/>
   <key id="community" for="node" attr.name="community" attr.type="int"/>
   <key id="relation" for="edge" attr.name="relation" attr.type="string"/>
+  <key id="type" for="edge" attr.name="type" attr.type="string"/>
   <key id="confidence" for="edge" attr.name="confidence" attr.type="string"/>
   <graph id="wiki" edgedefault="undirected">
     <node id="concepts/transformers">
@@ -125,15 +155,22 @@ GraphML XML format — loadable in Gephi, yEd, and Cytoscape:
       <data key="tags">ml, architecture</data>
       <data key="community">0</data>
     </node>
+    <!-- Untyped wikilink — no <data key="type"> element -->
     <edge source="concepts/transformers" target="entities/vaswani">
       <data key="relation">wikilink</data>
+      <data key="confidence">EXTRACTED</data>
+    </edge>
+    <!-- Typed edge from relationships: block -->
+    <edge source="concepts/transformers" target="concepts/lstm">
+      <data key="relation">contradicts</data>
+      <data key="type">contradicts</data>
       <data key="confidence">EXTRACTED</data>
     </edge>
   </graph>
 </graphml>
 ```
 
-Write one `<node>` per page and one `<edge>` per wikilink.
+Write one `<node>` per page and one `<edge>` per link. For typed edges (those where `typed: true` in the edge list), emit both `<data key="relation">` with the semantic type value **and** `<data key="type">` with the same value — this keeps `relation` readable for tools that already consume it while letting type-aware tools filter on the dedicated `type` key. Untyped wikilinks omit the `<data key="type">` element entirely.
 
 ---
 
@@ -148,12 +185,16 @@ Neo4j Cypher `MERGE` statements — paste into Neo4j Browser or run with `cypher
 // Nodes
 MERGE (n:Page {id: "concepts/transformers"}) SET n.label = "Transformer Architecture", n.category = "concepts", n.tags = ["ml","architecture"], n.community = 0;
 MERGE (n:Page {id: "entities/vaswani"}) SET n.label = "Ashish Vaswani", n.category = "entities", n.tags = ["person","ml"], n.community = 0;
+MERGE (n:Page {id: "concepts/lstm"}) SET n.label = "LSTM", n.category = "concepts", n.tags = ["ml","rnn"], n.community = 0;
 
 // Relationships
+// Untyped wikilinks use [:WIKILINK]
 MATCH (a:Page {id: "concepts/transformers"}), (b:Page {id: "entities/vaswani"}) MERGE (a)-[:WIKILINK {relation: "wikilink", confidence: "EXTRACTED"}]->(b);
+// Typed edges use the relationship type as the label (UPPERCASE)
+MATCH (a:Page {id: "concepts/transformers"}), (b:Page {id: "concepts/lstm"}) MERGE (a)-[:CONTRADICTS {relation: "contradicts", confidence: "EXTRACTED"}]->(b);
 ```
 
-Write one `MERGE` node statement per page, then one `MATCH`/`MERGE` relationship statement per edge.
+Write one `MERGE` node statement per page, then one `MATCH`/`MERGE` relationship statement per edge. For typed edges, use the `type` value uppercased as the Cypher relationship label (e.g., `contradicts` → `[:CONTRADICTS]`, `derived_from` → `[:DERIVED_FROM]`). Untyped wikilinks always use `[:WIKILINK]`.
 
 ---
 
@@ -173,10 +214,26 @@ Build the HTML file by:
 
 2. Generating a JSON array of edge objects for vis.js:
 ```js
-{from: "concepts/transformers", to: "entities/vaswani", dashes: false, width: 1, color: {color: "#666", opacity: 0.6}}
+// Untyped wikilink
+{from: "concepts/transformers", to: "entities/vaswani", dashes: false, width: 1, color: {color: "#666", opacity: 0.6}, title: "wikilink"}
+// Typed edge
+{from: "concepts/transformers", to: "concepts/lstm", dashes: false, width: 2, color: {color: "#E15759", opacity: 0.8}, label: "contradicts", font: {size: 9, color: "#ccc"}, title: "contradicts"}
 ```
 - `dashes: true` for INFERRED edges
 - `dashes: [4,8]` for AMBIGUOUS edges
+- **Typed edges** (`typed: true`): set `width: 2`, add a `label` field showing the type, and apply a type-specific color:
+
+| Type | Edge color |
+|---|---|
+| `extends` | `#59A14F` (green) |
+| `implements` | `#4E79A7` (blue) |
+| `contradicts` | `#E15759` (red) |
+| `derived_from` | `#F28E2B` (orange) |
+| `uses` | `#76B7B2` (teal) |
+| `replaces` | `#B07AA1` (purple) |
+| `related_to` | `#BAB0AC` (grey — same as untyped) |
+
+Untyped `wikilink` edges keep the existing `#666` grey color and no label.
 
 3. Writing the full HTML file:
 
@@ -258,10 +315,12 @@ Wiki export complete → wiki-export/
   graph.html    — interactive browser visualization (open in any browser)
 ```
 
-In filtered mode, append a line showing what was excluded:
+Append filter notes when active:
 ```
+  (filtered: project:prismor — 19 of 67 pages)
   (filtered: X of Y pages excluded — visibility/internal, visibility/pii)
 ```
+Only include lines for filters that were actually applied.
 
 ## Notes
 
