@@ -1,0 +1,4 @@
+interface:
+  display_name: "PDF to AI"
+  short_description: "Convert PDFs into Markdown and JSONL reference artifacts."
+  default_prompt: "Use $pdf-to-ai to convert this PDF into AI-friendly Markdown and JSONL artifacts."
